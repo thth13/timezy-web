@@ -51,3 +51,77 @@ export async function logout() {
   cookieStore.delete('session');
   redirect('/');
 }
+
+export async function getTeacherProfile(teacherId: string) {
+  try {
+    const { connectToDatabase } = await import('@/lib/mongo');
+    await connectToDatabase();
+    
+    const { Teacher } = await import('@/models/Teacher');
+    const { Booking } = await import('@/models/Booking');
+    
+    const teacher = await Teacher.findById(teacherId).lean();
+    if (!teacher) {
+      return { error: 'Teacher not found' };
+    }
+
+    // Получаем статистику
+    const totalLessons = await Booking.countDocuments({ 
+      teacherId,
+      status: { $in: ['confirmed', 'pending'] }
+    });
+
+    const activeLessons = await Booking.countDocuments({
+      teacherId,
+      date: { $gte: new Date() },
+      status: { $in: ['confirmed', 'pending'] }
+    });
+
+    // Получаем ближайшие доступные слоты
+    const now = new Date();
+    const upcomingBookings = await Booking.find({
+      teacherId,
+      date: { $gte: now },
+      status: { $in: ['confirmed', 'pending'] }
+    })
+    .sort({ date: 1, startTime: 1 })
+    .limit(20)
+    .lean();
+
+    // Получаем список студентов (уникальные)
+    const studentBookings = await Booking.aggregate([
+      { 
+        $match: { 
+          teacherId: teacher._id,
+          status: { $in: ['confirmed', 'pending'] }
+        } 
+      },
+      {
+        $group: {
+          _id: '$studentTelegramId',
+          firstName: { $first: '$studentFirstName' },
+          username: { $first: '$studentUsername' },
+          totalLessons: { $sum: 1 },
+          lastLesson: { $max: '$date' }
+        }
+      },
+      { $sort: { totalLessons: -1 } },
+      { $limit: 10 }
+    ]);
+
+    return {
+      teacher: JSON.parse(JSON.stringify(teacher)),
+      stats: {
+        totalLessons,
+        activeLessons,
+        successRate: 98, // можно рассчитать на основе отмененных уроков
+        rating: 4.9
+      },
+      upcomingBookings: JSON.parse(JSON.stringify(upcomingBookings)),
+      students: JSON.parse(JSON.stringify(studentBookings))
+    };
+  } catch (error) {
+    console.error('Error fetching teacher profile:', error);
+    return { error: 'Failed to fetch teacher profile' };
+  }
+}
